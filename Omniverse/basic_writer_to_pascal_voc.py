@@ -2,6 +2,8 @@ import os
 import json
 import numpy as np
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 def read_labels(json_file):
@@ -27,24 +29,44 @@ def process_bounding_boxes(npy_file, labels):
     return processed_boxes
 
 
+def process_file(render_number, input_folder):
+    image_file = f'rgb_{str(render_number).zfill(4)}.png'
+    bbox_file = f'bounding_box_2d_loose_{str(render_number).zfill(4)}.npy'
+    label_file = f'bounding_box_2d_loose_labels_{str(render_number).zfill(4)}.json'
+
+    if not (os.path.exists(os.path.join(input_folder, bbox_file)) and os.path.exists(os.path.join(input_folder, label_file))):
+        return render_number, None
+
+    labels = read_labels(os.path.join(input_folder, label_file))
+    processed_boxes = process_bounding_boxes(os.path.join(input_folder, bbox_file), labels)
+    
+    return render_number, {image_file: processed_boxes}
+
+
 def main(input_folder):
+    start_time = time.time()
+
     output_data = {}
     render_number = 0
+    max_workers = os.cpu_count()  # Use the number of available CPU cores for threading
 
-    while True:
-        image_file = f'rgb_{str(render_number).zfill(4)}.png'
-        bbox_file = f'bounding_box_2d_loose_{str(render_number).zfill(4)}.npy'
-        label_file = f'bounding_box_2d_loose_labels_{str(render_number).zfill(4)}.json'
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
 
-        if not (os.path.exists(os.path.join(input_folder, bbox_file)) and os.path.exists(os.path.join(input_folder, label_file))):
-            print("Complete or missing file(s): " + str(render_number))
-            break
+        while True:
+            if not (os.path.exists(os.path.join(input_folder, f'bounding_box_2d_loose_{str(render_number).zfill(4)}.npy')) and
+                    os.path.exists(os.path.join(input_folder, f'bounding_box_2d_loose_labels_{str(render_number).zfill(4)}.json'))):
+                break
 
-        labels = read_labels(os.path.join(input_folder, label_file))
-        processed_boxes = process_bounding_boxes(os.path.join(input_folder, bbox_file), labels)
-        output_data[image_file] = processed_boxes
+            futures.append(executor.submit(process_file, render_number, input_folder))
+            render_number += 1
 
-        render_number += 1
+        for future in as_completed(futures):
+            render_number, result = future.result()
+            if result:
+                output_data.update(result)
+            else:
+                print(f"Samples: {render_number}")
 
     with open(os.path.join(input_folder, 'bounding_boxes.labels'), 'w') as file:
         json.dump({
@@ -52,6 +74,9 @@ def main(input_folder):
             "type": "bounding-box-labels",
             "boundingBoxes": output_data
         }, file, indent=4)
+
+    end_time = time.time()
+    print(f"Execution Time: {end_time - start_time} seconds")
 
 
 if __name__ == "__main__":
